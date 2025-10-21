@@ -58,7 +58,6 @@
 </div>
 
 <script>
-// ------------------ Data loading ------------------
 let SCENARIOS = [];
 let RUBRIC = {};
 (async () => {
@@ -71,7 +70,6 @@ let RUBRIC = {};
   });
 })();
 
-// ------------------ UI helpers ------------------
 const chat = document.getElementById('chat');
 function addBubble(who, text){
   const div = document.createElement('div');
@@ -91,62 +89,62 @@ player.addEventListener('play', ()=>{
   player.addEventListener('pause',stop); player.addEventListener('ended',stop);
 });
 
-// ------------------ Conversation engine (rule-based) ------------------
 let state = 'start';
 let convo = [];
 document.getElementById('state').textContent = 'state: ' + state;
 
+function agentHasSpoken() { return convo.some(t => t.who === 'agent'); }
+
 function heuristicsReply(userText, scenarioId){
-  // Simple templates based on keywords and state
   const t = (userText||'').toLowerCase();
   const s = SCENARIOS.scenarios.find(x=>x.id===scenarioId) || SCENARIOS.scenarios[0];
   const H = s?.hints || [];
 
   if(state==='start'){
-    if(/(住民税|納付|証明|固定資産|軽自動車|返金|還付)/.test(t)){
-      return "ご来庁ありがとうございます。まずご用件を詳しく教えてください。";
+    if(!agentHasSpoken()){
+      return s?.opening || "（来庁者の用件を一言で伝える）";
     }
-    return "こんにちは。ご用件をお聞かせください。";
+    if(/(ご用件|なんの手続|どうされました|用途|目的)/.test(t)){
+      return s?.opening || "（来庁者の用件を一言で伝える）";
+    }
+    return "すみません、まずは用件からお伝えします。";
   }
   if(state==='id_check'){
-    if(/(免許|身分証|マイナ|在留|保険証)/.test(t)){
-      return "ありがとうございます。名義と生年月日、住所もあわせて確認します。";
+    if(/(免許|身分証|マイナ|在留|保険証|提示)/.test(t)){
+      return "ありがとうございます。名義と生年月日、住所もお伝えします。";
     }
-    return "まず本人確認のため、身分証のご提示をお願いします。";
+    return "本人確認が必要ですよね。身分証をご提示します。";
   }
   if(state==='doc_check'){
-    if(/(分納|還付|充当|証明|再発行|名義|廃車|評価|審査|申出)/.test(t)){
-      return "手数料や受付時間を含め、必要書類と手順をご案内します。オンラインやコンビニの代替も選べます。";
+    if(/(分納|還付|充当|証明|再発行|名義|廃車|評価|審査|申出|手数料|受付時間)/.test(t)){
+      return "必要書類と手順の案内をお願いします。可能ならオンラインやコンビニの方法も知りたいです。";
     }
-    return (H[1] || "必要書類・手数料・受付時間をご案内します。");
+    return (H[1] || "具体的な手順と必要書類を教えてください。");
   }
   if(state==='close'){
-    if(/(大丈夫|わかった|ありがとう|助かる)/.test(t)){
-      return "本日の内容は以上です。ご不明点があればお知らせください。ありがとうございました。";
+    if(/(大丈夫|わかった|理解|ありがとう|助かる)/.test(t)){
+      return "ありがとうございます。今日は以上で大丈夫です。";
     }
-    return "ここまででご不明点はありませんか。次のアクションを確認して終了します。";
+    return "最後に次の行動と注意点を確認させてください。";
   }
-  return "確認します。少々お待ちください。";
+  return "確認します。";
 }
 
 function nextState(userText){
   const t = (userText||'').toLowerCase();
-  if(state==='start' && /(住民税|納付|証明|固定資産|軽自動車|返金|還付|ください|欲しい|手続き)/.test(t)) return 'id_check';
+  if(state==='start' && /(ご用件|どうされました|用途|目的|何の手続)/.test(t)) return 'id_check';
   if(state==='id_check' && /(免許|身分証|マイナ|在留|保険証|提示)/.test(t)) return 'doc_check';
-  if(state==='doc_check' && /(手数料|受付時間|必要|書類|オンライン|コンビニ|分納|還付|充当|予約)/.test(t)) return 'close';
+  if(state==='doc_check' && /(手数料|受付時間|必要|書類|オンライン|コンビニ|分納|還付|充当|予約|案内)/.test(t)) return 'close';
   return state;
 }
 
-// ------------------ speech (free, browser) ------------------
 const synth = window.speechSynthesis;
 function speakJa(text){
   const uttr = new SpeechSynthesisUtterance(text);
-  uttr.lang = 'ja-JP';
-  uttr.rate = 1.0;
-  const voices = synth.getVoices();
-  const ja = voices.find(v=>/ja-JP/.test(v.lang));
+  uttr.lang = 'ja-JP'; uttr.rate = 1.0;
+  const voices = synth.getVoices(); const ja = voices.find(v=>/ja-JP/.test(v.lang));
   if(ja) uttr.voice = ja;
-  uttr.onstart = ()=>{ player.src = ''; player.pause(); /* visual only */ };
+  uttr.onstart = ()=>{ player.src=''; player.pause(); };
   synth.speak(uttr);
 }
 
@@ -154,42 +152,33 @@ let recognition;
 function ensureRecognition(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR) { alert('このブラウザは音声認識に対応していません（Chrome推奨）'); return null; }
-  const r = new SR();
-  r.lang = 'ja-JP'; r.interimResults = false; r.maxAlternatives = 1;
-  return r;
+  const r = new SR(); r.lang = 'ja-JP'; r.interimResults = false; r.maxAlternatives = 1; return r;
 }
 
-// record button
 const recBtn = document.getElementById('rec');
 recBtn.onmousedown = () => {
-  recognition = ensureRecognition();
-  if(!recognition) return;
-  recognition.start();
-  recBtn.textContent = "🎙️ 録音中…（離すと送信）";
+  recognition = ensureRecognition(); if(!recognition) return;
+  recognition.start(); recBtn.textContent = "🎙️ 録音中…（離すと送信）";
   recognition.onresult = (e)=>{
     const text = e.results[0][0].transcript;
     addBubble('user', text); convo.push({who:'user', text});
     const rep = heuristicsReply(text, document.getElementById('scenario').value);
     state = nextState(text); document.getElementById('state').textContent = 'state: ' + state;
-    addBubble('agent', rep); convo.push({who:'agent', text: rep});
-    speakJa(rep);
+    addBubble('agent', rep); convo.push({who:'agent', text: rep}); speakJa(rep);
   };
   recognition.onerror = ()=>{ recBtn.textContent = "🎙️ 長押しで録音"; };
 };
 recBtn.onmouseup = () => { try{ recognition && recognition.stop(); }catch(e){} recBtn.textContent = "🎙️ 長押しで録音"; };
 
-// text debug
 const input = document.getElementById('input');
 document.getElementById('send').onclick = () => {
   const text = input.value.trim(); if(!text) return; input.value='';
   addBubble('user', text); convo.push({who:'user', text});
   const rep = heuristicsReply(text, document.getElementById('scenario').value);
   state = nextState(text); document.getElementById('state').textContent = 'state: ' + state;
-  addBubble('agent', rep); convo.push({who:'agent', text: rep});
-  speakJa(rep);
+  addBubble('agent', rep); convo.push({who:'agent', text: rep}); speakJa(rep);
 };
 
-// ------------------ scoring (rule-based only) ------------------
 function scoreConversation(convo, rubric){
   const userAll = convo.filter(t=>t.who==='user').map(t=>t.text).join('\n');
   let scoreTotal = 0, weightSum = 0, sub = {}, improvements = [];
@@ -197,7 +186,7 @@ function scoreConversation(convo, rubric){
     const must = rule.must||[]; let hit=0;
     must.forEach(pat => { if(new RegExp(pat).test(userAll)) hit++; });
     const ratio = hit / Math.max(1, must.length);
-    const subScore = 1 + ratio * 4; // 1-5
+    const subScore = 1 + ratio * 4;
     sub[key] = +(subScore.toFixed(2));
     scoreTotal += subScore * (rule.weight||1);
     weightSum += (rule.weight||1);
@@ -206,7 +195,6 @@ function scoreConversation(convo, rubric){
   const total100 = +( (scoreTotal / (5*weightSum) * 100).toFixed(1) );
   return { total_score: total100, sub_scores: sub, improvements: improvements.slice(0,5) };
 }
-
 document.getElementById('scoreBtn').onclick = async () => {
   const r = scoreConversation(convo, RUBRIC);
   document.getElementById('result').textContent = JSON.stringify(r, null, 2);
