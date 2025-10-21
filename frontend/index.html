@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Avatar Training SaaS（税務窓口ロープレ / Azure TTS）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin: 24px; }
+    .wrap { display:grid; grid-template-columns: 320px 1fr; gap:24px; align-items:start; }
+    .panel { padding:16px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; box-shadow:0 2px 8px rgba(0,0,0,.03); }
+    .bubble { padding: 10px 12px; border-radius: 12px; margin: 8px 0; max-width: 620px; }
+    .user { background: #e7f5ff; }
+    .agent { background: #f1f3f5; }
+    .row { display:flex; gap:8px; flex-wrap: wrap; align-items:center; }
+    .pill{ padding:6px 12px; border-radius:999px; background:#eef; }
+    audio{ display:block; margin:8px 0; width:100%; }
+    input[type=text], select { flex:1; padding:10px; border:1px solid #ccc; border-radius:8px; }
+    button{ padding:10px 16px; border:0; border-radius:8px; cursor:pointer; background:#2563eb; color:#fff; }
+    #avatarStage { width: 300px; height: 300px; position: relative; border-radius: 16px; overflow: hidden; background:#EAF4FF; }
+    #avatarStage svg { position:absolute; inset:0; }
+    .mouth { position:absolute; inset:0; display:none; }
+    .visible { display:block; }
+    .small { font-size: 12px; color:#555; }
+    pre{ background:#f8f9fa; padding:12px; border-radius:8px; overflow:auto; max-height:240px; }
+  </style>
+</head>
+<body>
+  <h1>税務窓口ロープレ（音声 + 2Dアバター + LLM 採点 / Azure TTS）</h1>
+  <p class="pill small">URL 末尾に <code>?api=...</code> でAPIを切替</p>
+
+  <div class="wrap">
+    <div class="panel">
+      <div id="avatarStage">
+        <img src="./assets/avatar/base.svg" />
+        <img class="mouth visible" id="mouthClosed" src="./assets/avatar/mouth_closed.svg" />
+        <img class="mouth" id="mouthOpen" src="./assets/avatar/mouth_open.svg" />
+        <img class="mouth" id="mouthA" src="./assets/avatar/mouth_a.svg" />
+        <img class="mouth" id="mouthI" src="./assets/avatar/mouth_i.svg" />
+        <img class="mouth" id="mouthU" src="./assets/avatar/mouth_u.svg" />
+        <img class="mouth" id="mouthO" src="./assets/avatar/mouth_o.svg" />
+      </div>
+      <audio id="player" controls></audio>
+      <div class="row" style="margin-top:8px;">
+        <button id="rec">● 長押しで録音</button>
+        <select id="scenario">
+          <option value="tax_01_overdue_installment">住民税：納付書紛失/分納</option>
+          <option value="tax_02_property_assessment">固定資産税：課税誤り主張</option>
+          <option value="tax_03_keicar_namechange">軽自動車税：名義変更未了</option>
+          <option value="tax_04_tax_certificate_now">納税証明：至急発行</option>
+          <option value="tax_05_refund_withdrawal">口座振替：返金要求</option>
+        </select>
+      </div>
+      <p id="state" class="small">state: start</p>
+    </div>
+
+    <div class="panel">
+      <div id="chat"></div>
+      <div class="row" style="margin-top:8px;">
+        <input id="input" type="text" placeholder="（デバッグ用）あなたのセリフ…" />
+        <button id="send">送信</button>
+        <button id="scoreBtn" style="background:#0ea5e9;">採点</button>
+      </div>
+      <h3>採点結果</h3>
+      <pre id="result"></pre>
+    </div>
+  </div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const API = params.get('api') || (window.API_URL || 'http://localhost:8000');
+let state = "start";
+let convo = [];
+const chat = document.getElementById('chat');
+const recBtn = document.getElementById('rec');
+const player = document.getElementById('player');
+const stateLabel = document.getElementById('state');
+const result = document.getElementById('result');
+const scenarioSel = document.getElementById('scenario');
+
+function addBubble(who, text){
+  const div = document.createElement('div');
+  div.className = 'bubble ' + (who === 'user' ? 'user' : 'agent');
+  div.textContent = (who === 'user' ? 'あなた: ' : '来庁者: ') + text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function setMouth(id){
+  document.querySelectorAll('.mouth').forEach(el=>el.classList.remove('visible'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('visible');
+}
+
+// Simple mouth anim while playing
+player.addEventListener('play', ()=>{
+  setMouth('mouthOpen');
+  let toggle = true;
+  const iv = setInterval(()=>{
+    setMouth(toggle ? 'mouthOpen' : 'mouthClosed');
+    toggle = !toggle;
+  }, 120);
+  const stop = ()=>{ clearInterval(iv); setMouth('mouthClosed'); player.removeEventListener('pause', stop); player.removeEventListener('ended', stop); };
+  player.addEventListener('pause', stop);
+  player.addEventListener('ended', stop);
+});
+
+let mediaRecorder, chunks = [];
+async function initMedia(){
+  const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  mediaRecorder.ondataavailable = (e)=>{ if(e.data.size>0) chunks.push(e.data); };
+  mediaRecorder.onstop = async ()=>{
+    const blob = new Blob(chunks, {type:'audio/webm'});
+    chunks = [];
+
+    const fd = new FormData();
+    fd.append('state', state);
+    fd.append('scenario_id', scenarioSel.value);
+    fd.append('audio', blob, 'input.webm');
+
+    const res = await fetch(API + '/session/hear_audio', { method:'POST', body: fd });
+    const data = await res.json();
+
+    state = data.next_state;
+    stateLabel.textContent = 'state: ' + state;
+
+    addBubble('user', data.user_text);
+    addBubble('agent', data.agent_text);
+    convo.push({who:'user', text: data.user_text});
+    convo.push({who:'agent', text: data.agent_text});
+
+    const b64 = data.agent_audio_wav_base64;
+    const byteChars = atob(b64);
+    const byteNums = new Uint8Array(byteChars.length);
+    for (let i=0; i<byteChars.length; i++){ byteNums[i] = byteChars.charCodeAt(i); }
+    const wavBlob = new Blob([byteNums], {type:'audio/wav'});
+    player.src = URL.createObjectURL(wavBlob);
+    player.play();
+  };
+}
+
+recBtn.onmousedown = async()=>{ if(!mediaRecorder){ await initMedia(); } chunks = []; mediaRecorder.start(); recBtn.textContent = "● 録音中…（離すと送信）"; };
+recBtn.onmouseup = ()=>{ if(mediaRecorder && mediaRecorder.state === "recording"){ mediaRecorder.stop(); recBtn.textContent = "● 長押しで録音"; } };
+
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+send.onclick = async () => {
+  const text = input.value.trim();
+  if(!text) return;
+  input.value = "";
+  addBubble('user', text);
+  convo.push({who:'user', text});
+  const res = await fetch(API + '/session/hear', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({state, user_text: text, scenario_id: scenarioSel.value})
+  });
+  const data = await res.json();
+  state = data.next_state; stateLabel.textContent = 'state: ' + state;
+  addBubble('agent', data.agent_text);
+  convo.push({who:'agent', text: data.agent_text});
+};
+
+document.getElementById('scoreBtn').onclick = async () => {
+  const res = await fetch(API + '/score/evaluate', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({conversation: convo})
+  });
+  const data = await res.json();
+  result.textContent = JSON.stringify(data, null, 2);
+};
+</script>
+</body>
+</html>
