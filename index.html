@@ -1,0 +1,216 @@
+
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>税務窓口ロープレ（無料・キー不要・ブラウザだけ）</title>
+<style>
+  body{font-family:system-ui,'Noto Sans JP',sans-serif;margin:24px}
+  .wrap{display:grid;grid-template-columns:320px 1fr;gap:24px;align-items:start}
+  .panel{padding:16px;border:1px solid #e5e7eb;border-radius:12px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.03)}
+  .bubble{padding:10px 12px;border-radius:12px;margin:8px 0;max-width:640px}
+  .user{background:#e7f5ff}.agent{background:#f1f3f5}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .pill{padding:6px 12px;border-radius:999px;background:#eef}.small{font-size:12px;color:#555}
+  input[type=text],select{flex:1;padding:10px;border:1px solid #ccc;border-radius:8px}
+  button{padding:10px 16px;border:0;border-radius:8px;cursor:pointer;background:#2563eb;color:#fff}
+  #avatarStage{width:300px;height:300px;position:relative;border-radius:16px;overflow:hidden;background:#EAF4FF}
+  #avatarStage img{position:absolute;inset:0}
+  .mouth{position:absolute;inset:0;display:none}.visible{display:block}
+  audio{display:block;margin:8px 0;width:100%}
+  pre{background:#f8f9fa;padding:12px;border-radius:8px;overflow:auto;max-height:240px}
+</style>
+</head>
+<body>
+<h1>税務窓口ロープレ（無料・キー不要・ブラウザだけ）</h1>
+<p class="pill small">音声認識/合成はブラウザの Web Speech API を使用（Chrome推奨）。</p>
+
+<div class="wrap">
+  <div class="panel">
+    <div id="avatarStage">
+      <img src="./assets/avatar/base.svg"/>
+      <img class="mouth visible" id="mouthClosed" src="./assets/avatar/mouth_closed.svg"/>
+      <img class="mouth" id="mouthOpen" src="./assets/avatar/mouth_open.svg"/>
+      <img class="mouth" id="mouthA" src="./assets/avatar/mouth_a.svg"/>
+      <img class="mouth" id="mouthI" src="./assets/avatar/mouth_i.svg"/>
+      <img class="mouth" id="mouthU" src="./assets/avatar/mouth_u.svg"/>
+      <img class="mouth" id="mouthO" src="./assets/avatar/mouth_o.svg"/>
+    </div>
+    <audio id="player" controls></audio>
+    <div class="row" style="margin-top:8px;">
+      <button id="rec">🎙️ 長押しで録音</button>
+      <select id="scenario"></select>
+    </div>
+    <p id="state" class="small">state: start</p>
+  </div>
+
+  <div class="panel">
+    <div id="chat"></div>
+    <div class="row" style="margin-top:8px;">
+      <input id="input" type="text" placeholder="（デバッグ用）あなたのセリフ…"/>
+      <button id="send">送信</button>
+      <button id="scoreBtn" style="background:#0ea5e9;">採点</button>
+    </div>
+    <h3>採点結果</h3>
+    <pre id="result"></pre>
+  </div>
+</div>
+
+<script>
+// ------------------ Data loading ------------------
+let SCENARIOS = [];
+let RUBRIC = {};
+(async () => {
+  SCENARIOS = await (await fetch('./scenarios_tax.json')).json();
+  RUBRIC = await (await fetch('./rubric_tax.json')).json();
+  const sel = document.getElementById('scenario');
+  SCENARIOS.scenarios.forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.id; o.textContent = s.title; sel.appendChild(o);
+  });
+})();
+
+// ------------------ UI helpers ------------------
+const chat = document.getElementById('chat');
+function addBubble(who, text){
+  const div = document.createElement('div');
+  div.className = 'bubble ' + (who === 'user' ? 'user' : 'agent');
+  div.textContent = (who === 'user' ? 'あなた: ' : '来庁者: ') + text;
+  chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+}
+function setMouth(id){
+  document.querySelectorAll('.mouth').forEach(el=>el.classList.remove('visible'));
+  const el = document.getElementById(id); if(el) el.classList.add('visible');
+}
+const player = document.getElementById('player');
+player.addEventListener('play', ()=>{
+  setMouth('mouthOpen'); let toggle=true;
+  const iv=setInterval(()=>{ setMouth(toggle?'mouthOpen':'mouthClosed'); toggle=!toggle; },120);
+  const stop=()=>{ clearInterval(iv); setMouth('mouthClosed'); player.removeEventListener('pause',stop); player.removeEventListener('ended',stop); };
+  player.addEventListener('pause',stop); player.addEventListener('ended',stop);
+});
+
+// ------------------ Conversation engine (rule-based) ------------------
+let state = 'start';
+let convo = [];
+document.getElementById('state').textContent = 'state: ' + state;
+
+function heuristicsReply(userText, scenarioId){
+  // Simple templates based on keywords and state
+  const t = (userText||'').toLowerCase();
+  const s = SCENARIOS.scenarios.find(x=>x.id===scenarioId) || SCENARIOS.scenarios[0];
+  const H = s?.hints || [];
+
+  if(state==='start'){
+    if(/(住民税|納付|証明|固定資産|軽自動車|返金|還付)/.test(t)){
+      return "ご来庁ありがとうございます。まずご用件を詳しく教えてください。";
+    }
+    return "こんにちは。ご用件をお聞かせください。";
+  }
+  if(state==='id_check'){
+    if(/(免許|身分証|マイナ|在留|保険証)/.test(t)){
+      return "ありがとうございます。名義と生年月日、住所もあわせて確認します。";
+    }
+    return "まず本人確認のため、身分証のご提示をお願いします。";
+  }
+  if(state==='doc_check'){
+    if(/(分納|還付|充当|証明|再発行|名義|廃車|評価|審査|申出)/.test(t)){
+      return "手数料や受付時間を含め、必要書類と手順をご案内します。オンラインやコンビニの代替も選べます。";
+    }
+    return (H[1] || "必要書類・手数料・受付時間をご案内します。");
+  }
+  if(state==='close'){
+    if(/(大丈夫|わかった|ありがとう|助かる)/.test(t)){
+      return "本日の内容は以上です。ご不明点があればお知らせください。ありがとうございました。";
+    }
+    return "ここまででご不明点はありませんか。次のアクションを確認して終了します。";
+  }
+  return "確認します。少々お待ちください。";
+}
+
+function nextState(userText){
+  const t = (userText||'').toLowerCase();
+  if(state==='start' && /(住民税|納付|証明|固定資産|軽自動車|返金|還付|ください|欲しい|手続き)/.test(t)) return 'id_check';
+  if(state==='id_check' && /(免許|身分証|マイナ|在留|保険証|提示)/.test(t)) return 'doc_check';
+  if(state==='doc_check' && /(手数料|受付時間|必要|書類|オンライン|コンビニ|分納|還付|充当|予約)/.test(t)) return 'close';
+  return state;
+}
+
+// ------------------ speech (free, browser) ------------------
+const synth = window.speechSynthesis;
+function speakJa(text){
+  const uttr = new SpeechSynthesisUtterance(text);
+  uttr.lang = 'ja-JP';
+  uttr.rate = 1.0;
+  const voices = synth.getVoices();
+  const ja = voices.find(v=>/ja-JP/.test(v.lang));
+  if(ja) uttr.voice = ja;
+  uttr.onstart = ()=>{ player.src = ''; player.pause(); /* visual only */ };
+  synth.speak(uttr);
+}
+
+let recognition;
+function ensureRecognition(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR) { alert('このブラウザは音声認識に対応していません（Chrome推奨）'); return null; }
+  const r = new SR();
+  r.lang = 'ja-JP'; r.interimResults = false; r.maxAlternatives = 1;
+  return r;
+}
+
+// record button
+const recBtn = document.getElementById('rec');
+recBtn.onmousedown = () => {
+  recognition = ensureRecognition();
+  if(!recognition) return;
+  recognition.start();
+  recBtn.textContent = "🎙️ 録音中…（離すと送信）";
+  recognition.onresult = (e)=>{
+    const text = e.results[0][0].transcript;
+    addBubble('user', text); convo.push({who:'user', text});
+    const rep = heuristicsReply(text, document.getElementById('scenario').value);
+    state = nextState(text); document.getElementById('state').textContent = 'state: ' + state;
+    addBubble('agent', rep); convo.push({who:'agent', text: rep});
+    speakJa(rep);
+  };
+  recognition.onerror = ()=>{ recBtn.textContent = "🎙️ 長押しで録音"; };
+};
+recBtn.onmouseup = () => { try{ recognition && recognition.stop(); }catch(e){} recBtn.textContent = "🎙️ 長押しで録音"; };
+
+// text debug
+const input = document.getElementById('input');
+document.getElementById('send').onclick = () => {
+  const text = input.value.trim(); if(!text) return; input.value='';
+  addBubble('user', text); convo.push({who:'user', text});
+  const rep = heuristicsReply(text, document.getElementById('scenario').value);
+  state = nextState(text); document.getElementById('state').textContent = 'state: ' + state;
+  addBubble('agent', rep); convo.push({who:'agent', text: rep});
+  speakJa(rep);
+};
+
+// ------------------ scoring (rule-based only) ------------------
+function scoreConversation(convo, rubric){
+  const userAll = convo.filter(t=>t.who==='user').map(t=>t.text).join('\n');
+  let scoreTotal = 0, weightSum = 0, sub = {}, improvements = [];
+  for(const [key, rule] of Object.entries(rubric)){
+    const must = rule.must||[]; let hit=0;
+    must.forEach(pat => { if(new RegExp(pat).test(userAll)) hit++; });
+    const ratio = hit / Math.max(1, must.length);
+    const subScore = 1 + ratio * 4; // 1-5
+    sub[key] = +(subScore.toFixed(2));
+    scoreTotal += subScore * (rule.weight||1);
+    weightSum += (rule.weight||1);
+    if(ratio<1) improvements.push(`${rule.name}: 要件を満たす発話を増やしましょう`);
+  }
+  const total100 = +( (scoreTotal / (5*weightSum) * 100).toFixed(1) );
+  return { total_score: total100, sub_scores: sub, improvements: improvements.slice(0,5) };
+}
+
+document.getElementById('scoreBtn').onclick = async () => {
+  const r = scoreConversation(convo, RUBRIC);
+  document.getElementById('result').textContent = JSON.stringify(r, null, 2);
+};
+</script>
+</body>
+</html>
